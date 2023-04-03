@@ -1,0 +1,45 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- manager.yaml
+
+
+vars:
+- fieldref: {}
+  name: APISERVER_SERVICE_NAME
+  objref:
+    kind: Service
+    name: apiserver
+    version: v1
+- fieldref:
+    fieldPath: metadata.namespace
+  name: APISERVER_SERVICE_NAMESPACE
+  objref:
+    kind: Service
+    name: apiserver
+    version: v1
+- fieldref: {}
+  name: APISERVER_CERTIFICATE_NAME
+  objref:
+    group: cert-manager.io
+    kind: Certificate
+    name: apiserver
+    version: v1
+- fieldref:
+    fieldPath: metadata.namespace
+  name: APISERVER_CERTIFICATE_NAMESPACE
+  objref:
+    group: cert-manager.io
+    kind: Certificate
+    name: apiserver
+    version: v1
+
+
+images:
+- name: controller
+  newName: quay.io/operator-framework/catalogd
+  newTag: devel
+
+configurations:
+- kustomizeconfig.yaml

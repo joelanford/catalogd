@@ -1,0 +1,140 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: system
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-issuer
+  namespace: system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: apiserver
+  namespace: system
+spec:
+  secretName: apiserver-cert
+  dnsNames:
+    - localhost
+    - $(APISERVER_SERVICE_NAME).$(APISERVER_SERVICE_NAMESPACE).svc
+    - $(APISERVER_SERVICE_NAME).$(APISERVER_SERVICE_NAMESPACE).svc.cluster.local
+  ipAddresses:
+    - 127.0.0.1
+  issuerRef:
+    name: selfsigned-issuer
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: apiserver-cert
+  namespace: system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apiserver
+  namespace: system
+spec:
+    type: ClusterIP
+    ports:
+      - name: https
+        port: 443
+        targetPort: 9443
+    selector:
+      control-plane: controller-manager
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.catalogd.operatorframework.io
+  annotations:
+    cert-manager.io/inject-ca-from: $(APISERVER_CERTIFICATE_NAMESPACE)/$(APISERVER_CERTIFICATE_NAME)
+spec:
+  group: catalogd.operatorframework.io
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: apiserver
+    namespace: system
+  version: v1alpha1
+  insecureSkipTLSVerify: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: system
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: deployment
+    app.kubernetes.io/instance: controller-manager
+    app.kubernetes.io/component: manager
+    app.kubernetes.io/created-by: catalogd
+    app.kubernetes.io/part-of: catalogd
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  replicas: 1
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        control-plane: controller-manager
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: apiserver-cert
+          secret:
+            secretName: apiserver-cert
+      containers:
+      - command:
+        - /manager
+        args:
+        - --leader-elect
+        image: controller:latest
+        name: manager
+        ports:
+          - containerPort: 9443
+            name: https
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - "ALL"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1024Mi
+          requests:
+            cpu: 500m
+            memory: 1024Mi
+        volumeMounts:
+          - name: apiserver-cert
+            mountPath: /apiserver.local.config/certificates
+            readOnly: true
+      serviceAccountName: controller-manager
+      terminationGracePeriodSeconds: 10

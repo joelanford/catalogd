@@ -1,0 +1,34 @@
+version: '3'
+
+includes:
+  build:
+    taskfile: .taskfile.build.yaml
+    internal: true
+  kind:
+    taskfile: .taskfile.kind.yaml
+    internal: true
+
+tasks:
+  kind:
+    cmds:
+    - task: kind:load-image
+      vars:
+        IMAGE: "$IMAGE_REPO:$IMAGE_TAG"
+        KIND_CLUSTER_NAME: "{{.KIND_CLUSTER_NAME}}"
+    - ./install.sh
+    deps:
+      - task: build:docker
+        vars:
+          GO_COVER: "{{.GO_COVER}}"
+          GO_BUILD_TAGS: "{{.GO_BUILD_TAGS}}"
+      - task: build:manifest
+        vars:
+          KUSTOMIZE_DIR: "{{.KUSTOMIZE_DIR}}"
+          CONTROLLER_MANIFEST: "{{.CONTROLLER_MANIFEST}}"
+      - task: build:install-script
+        vars:
+          CONTROLLER_MANIFEST: "{{.CONTROLLER_MANIFEST}}"
+      - task: kind:create
+        vars:
+          KIND_CLUSTER_NAME: "{{.KIND_CLUSTER_NAME}}"
+          KIND_EXTRA_FLAGS: "{{.KIND_EXTRA_FLAGS}}"

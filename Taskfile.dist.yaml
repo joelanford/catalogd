@@ -1,0 +1,70 @@
+version: '3'
+
+vars:
+  PROJECT: "{{base .ROOT_DIR}}"
+  TOOLSBIN: "{{.ROOT_DIR}}/hack/tools/bin"
+  GO_BUILD_TAGS: upstream
+
+env:
+  IMAGE_REPO: quay.io/operator-framework/{{.PROJECT}}
+  IMAGE_TAG: devel
+
+  GORELEASER_ARGS: --snapshot --clean
+  ENABLE_RELEASE_PIPELINE: false
+
+includes:
+  tools:
+    taskfile: .taskfile.tools.yaml
+    internal: true
+
+  build:
+    taskfile: .taskfile.build.yaml
+
+  test:
+    taskfile: .taskfile.test.yaml
+
+  deploy:
+    taskfile: .taskfile.deploy.yaml
+    internal: true
+
+run: when_changed
+
+tasks:
+  default:
+    cmds:
+      - task: build:binary
+
+  run:
+    desc: "Run the operator locally in a kind cluster"
+    summary: |
+        This task will run the operator in a kind cluster.
+      
+        The KIND_CLUSTER_NAME task variable is used to control the name of the
+        kind cluster. By default, this is set to "{{.PROJECT}}".
+    cmds:
+      - task: deploy:kind
+        vars:
+          KIND_CLUSTER_NAME: "{{.KIND_CLUSTER_NAME}}"
+
+  release:
+    desc: "Release the operator (by default only local release steps are executed)"
+    summary: |
+        This task will run the release pipeline.
+      
+        The GORELEASER_ARGS environment variable is used as the arguments for the 
+        `goreleaser release` command. The default arguments are `--snapshot --clean`.
+      
+        The ENABLE_RELEASE_PIPELINE environment variable is used to control the
+        GitHub changelog and release pipeline steps. By default, this is set to false.
+        This should only be set to true when running the release task for a tagged
+        release.
+    env:
+      GO_COVER: false
+      GO_BUILD_TAGS: "{{.GO_BUILD_TAGS}}"
+    cmds:
+      - task: build:manifest
+      - task: build:install-script
+        vars:
+          CONTROLLER_MANIFEST: https://github.com/operator-framework/{{.PROJECT}}/releases/download/$IMAGE_TAG/{{.PROJECT}}.yaml
+      - "{{.TOOLSBIN}}/goreleaser release $GORELEASER_ARGS"
+    deps: [tools:goreleaser]

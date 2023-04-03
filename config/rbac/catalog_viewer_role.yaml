@@ -1,0 +1,27 @@
+# permissions for end users to view catalogs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: clusterrole
+    app.kubernetes.io/instance: catalog-viewer-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: catalogd
+    app.kubernetes.io/part-of: catalogd
+    app.kubernetes.io/managed-by: kustomize
+  name: catalog-viewer-role
+rules:
+- apiGroups:
+  - catalogd.operatorframework.io
+  resources:
+  - catalogs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - catalogd.operatorframework.io
+  resources:
+  - catalogs/status
+  verbs:
+  - get

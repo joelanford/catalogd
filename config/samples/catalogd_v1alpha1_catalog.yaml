@@ -1,0 +1,9 @@
+apiVersion: operatorframework.io/v1alpha1
+kind: Catalog
+metadata:
+  name: operatorhub
+spec:
+  source:
+    type: image
+    image:
+      ref: quay.io/operatorhubio/catalog:latest
