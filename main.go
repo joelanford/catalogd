@@ -20,6 +20,9 @@ import (
 	_ "embed"
 	"flag"
 	"io"
+	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 
 	"github.com/operator-framework/operator-registry/pkg/image/containerdregistry"
@@ -53,6 +56,10 @@ func init() {
 }
 
 func main() {
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
 	var metricsAddr string
 	var enableLeaderElection bool
 	var probeAddr string
@@ -104,6 +111,8 @@ func main() {
 		setupLog.Error(err, "unable to create registry directory")
 		os.Exit(1)
 	}
+	defer os.RemoveAll(registryDir)
+
 	registryLog := logrus.New()
 	registryLog.SetOutput(io.Discard)
 
@@ -147,7 +156,9 @@ func main() {
 	if err := mgr.Add(&apiservers.CatalogMetadataAPIServer{
 		CertFile: "/apiserver.local.config/certificates/tls.crt",
 		KeyFile:  "/apiserver.local.config/certificates/tls.key",
-		Storage:  metadataStorage,
+		//CertFile: "cert.pem",
+		//KeyFile:  "key.pem",
+		Storage: metadataStorage,
 	}); err != nil {
 		setupLog.Error(err, "unable to add blob api server")
 		os.Exit(1)

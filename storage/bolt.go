@@ -25,7 +25,7 @@ type BoltStorage struct {
 	db *bolt.DB
 }
 
-func (b *BoltStorage) SyncCatalog(_ context.Context, catalogName string, metas []Meta) error {
+func (b *BoltStorage) SyncCatalog(_ context.Context, catalogName string, metas <-chan Meta) error {
 	return b.db.Update(func(tx *bolt.Tx) error {
 		catalogsBkt, err := tx.CreateBucketIfNotExists([]byte("catalogs"))
 		if err != nil {
@@ -35,7 +35,7 @@ func (b *BoltStorage) SyncCatalog(_ context.Context, catalogName string, metas [
 		if err != nil {
 			return err
 		}
-		for _, meta := range metas {
+		for meta := range metas {
 			catMeta := meta.ToCatalogMetadata(catalogName)
 			val, err := json.Marshal(catMeta)
 			if err != nil {

@@ -24,16 +24,19 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/joelanford/ignore"
 	"github.com/operator-framework/operator-registry/pkg/image"
+	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/finalizer"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -44,7 +47,7 @@ import (
 // CatalogReconciler reconciles a Catalog object
 type CatalogReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme *k8sruntime.Scheme
 
 	Storage    storage.Syncer
 	Registry   image.Registry
@@ -111,7 +114,8 @@ func checkForUnexpectedFieldChange(a, b catalogdv1alpha1.Catalog) bool {
 func (r *CatalogReconciler) reconcile(ctx context.Context, cat *catalogdv1alpha1.Catalog) (ctrl.Result, error) {
 	l := log.FromContext(ctx).WithName("catalog-controller")
 
-	if _, err := r.Finalizers.Finalize(ctx, cat); err != nil {
+	finalizerRes, err := r.Finalizers.Finalize(ctx, cat)
+	if err != nil {
 		err := fmt.Errorf("error managing finalizers: %v", err)
 		meta.SetStatusCondition(&cat.Status.Conditions, metav1.Condition{
 			Type:    catalogdv1alpha1.ConditionTypeSynced,
@@ -120,6 +124,9 @@ func (r *CatalogReconciler) reconcile(ctx context.Context, cat *catalogdv1alpha1
 			Message: err.Error(),
 		})
 		return ctrl.Result{}, err
+	}
+	if finalizerRes.Updated || finalizerRes.StatusUpdated || !cat.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
 	}
 
 	if cat.Spec.Source.Type != "image" {
@@ -181,16 +188,26 @@ func (r *CatalogReconciler) reconcile(ctx context.Context, cat *catalogdv1alpha1
 		return ctrl.Result{}, err
 	}
 
-	var allMetas []storage.Meta
-	l.Info("loading metas")
-	if err := walkFS(os.DirFS(filepath.Join(tmpDir, "configs")), func(path string, metas []storage.Meta, err error) error {
-		if err != nil {
-			return err
-		}
-		allMetas = append(allMetas, metas...)
-		return nil
-	}); err != nil {
-		err := fmt.Errorf("error walking configs: %v", err)
+	l.Info("syncing metas")
+	var (
+		eg     errgroup.Group
+		metaCh = make(chan storage.Meta)
+	)
+
+	eg.Go(func() error {
+		defer close(metaCh)
+		return walkFS(os.DirFS(filepath.Join(tmpDir, "configs")), func(path string, metas <-chan storage.Meta) error {
+			for meta := range metas {
+				metaCh <- meta
+			}
+			return nil
+		})
+	})
+	eg.Go(func() error {
+		return r.Storage.SyncCatalog(ctx, cat.Name, metaCh)
+	})
+	if err := eg.Wait(); err != nil {
+		err := fmt.Errorf("error syncing metas: %v", err)
 		meta.SetStatusCondition(&cat.Status.Conditions, metav1.Condition{
 			Type:    catalogdv1alpha1.ConditionTypeSynced,
 			Status:  metav1.ConditionFalse,
@@ -200,17 +217,6 @@ func (r *CatalogReconciler) reconcile(ctx context.Context, cat *catalogdv1alpha1
 		return ctrl.Result{}, err
 	}
 
-	l.Info("syncing catalog")
-	if err := r.Storage.SyncCatalog(ctx, cat.Name, allMetas); err != nil {
-		err := fmt.Errorf("error syncing catalog: %v", err)
-		meta.SetStatusCondition(&cat.Status.Conditions, metav1.Condition{
-			Type:    catalogdv1alpha1.ConditionTypeSynced,
-			Status:  metav1.ConditionFalse,
-			Reason:  catalogdv1alpha1.SyncReasonError,
-			Message: err.Error(),
-		})
-		return ctrl.Result{}, err
-	}
 	meta.SetStatusCondition(&cat.Status.Conditions, metav1.Condition{
 		Type:    catalogdv1alpha1.ConditionTypeSynced,
 		Status:  metav1.ConditionTrue,
@@ -224,10 +230,13 @@ func (r *CatalogReconciler) reconcile(ctx context.Context, cat *catalogdv1alpha1
 func (r *CatalogReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&catalogdv1alpha1.Catalog{}).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: runtime.NumCPU(),
+		}).
 		Complete(r)
 }
 
-type walkFunc func(path string, metas []storage.Meta, err error) error
+type walkFunc func(path string, metas <-chan storage.Meta) error
 
 // WalkFS walks root using a gitignore-style filename matcher to skip files
 // that match patterns found in .indexignore files found throughout the filesystem.
@@ -246,7 +255,7 @@ func walkFS(root fs.FS, walkFn walkFunc) error {
 
 	return fs.WalkDir(root, ".", func(path string, info fs.DirEntry, err error) error {
 		if err != nil {
-			return walkFn(path, nil, err)
+			return err
 		}
 		// avoid validating a directory, an .indexignore file, or any file that matches
 		// an ignore pattern outlined in a .indexignore file.
@@ -254,32 +263,36 @@ func walkFS(root fs.FS, walkFn walkFunc) error {
 			return nil
 		}
 
-		metas, err := loadMetas(root, path)
-		if err != nil {
-			return walkFn(path, metas, err)
-		}
+		var eg errgroup.Group
 
-		return walkFn(path, metas, err)
+		metas := make(chan storage.Meta)
+		eg.Go(func() error {
+			defer close(metas)
+			return loadMetas(root, path, metas)
+		})
+		eg.Go(func() error {
+			return walkFn(path, metas)
+		})
+		return eg.Wait()
 	})
 }
 
-func loadMetas(root fs.FS, path string) ([]storage.Meta, error) {
+func loadMetas(root fs.FS, path string, metas chan<- storage.Meta) error {
 	f, err := root.Open(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer f.Close()
 	dec := yaml.NewYAMLToJSONDecoder(f)
 
-	var metas []storage.Meta
 	for {
 		var meta storage.Meta
 		if err := dec.Decode(&meta); err == io.EOF {
 			break
 		} else if err != nil {
-			return nil, err
+			return err
 		}
-		metas = append(metas, meta)
+		metas <- meta
 	}
-	return metas, nil
+	return nil
 }

@@ -7,7 +7,7 @@ import (
 )
 
 type Syncer interface {
-	SyncCatalog(ctx context.Context, catalogName string, metas []Meta) error
+	SyncCatalog(ctx context.Context, catalogName string, metas <-chan Meta) error
 	DeleteCatalog(ctx context.Context, catalogName string) error
 }
 
