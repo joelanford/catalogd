@@ -156,9 +156,7 @@ func main() {
 	if err := mgr.Add(&apiservers.CatalogMetadataAPIServer{
 		CertFile: "/apiserver.local.config/certificates/tls.crt",
 		KeyFile:  "/apiserver.local.config/certificates/tls.key",
-		//CertFile: "cert.pem",
-		//KeyFile:  "key.pem",
-		Storage: metadataStorage,
+		Storage:  metadataStorage,
 	}); err != nil {
 		setupLog.Error(err, "unable to add blob api server")
 		os.Exit(1)

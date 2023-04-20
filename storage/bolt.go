@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -27,12 +29,11 @@ type BoltStorage struct {
 
 func (b *BoltStorage) SyncCatalog(_ context.Context, catalogName string, metas <-chan Meta) error {
 	return b.db.Update(func(tx *bolt.Tx) error {
-		catalogsBkt, err := tx.CreateBucketIfNotExists([]byte("catalogs"))
+		metasBkt, err := tx.CreateBucketIfNotExists([]byte("metas"))
 		if err != nil {
 			return err
 		}
-		catalogBkt, err := getEmptyBucket(catalogsBkt, []byte(catalogName))
-		if err != nil {
+		if err := b.deleteCatalogMetasTx(tx, metasBkt, catalogName); err != nil {
 			return err
 		}
 		for meta := range metas {
@@ -41,7 +42,7 @@ func (b *BoltStorage) SyncCatalog(_ context.Context, catalogName string, metas <
 			if err != nil {
 				return err
 			}
-			if err := catalogBkt.Put([]byte(catMeta.Name), val); err != nil {
+			if err := metasBkt.Put([]byte(catMeta.Name), val); err != nil {
 				return err
 			}
 		}
@@ -49,60 +50,40 @@ func (b *BoltStorage) SyncCatalog(_ context.Context, catalogName string, metas <
 	})
 }
 
-func getEmptyBucket(parent *bolt.Bucket, bucketName []byte) (*bolt.Bucket, error) {
-	if parent.Bucket(bucketName) != nil {
-		if err := parent.DeleteBucket(bucketName); err != nil {
-			return nil, err
-		}
-	}
-	bkt, err := parent.CreateBucket(bucketName)
-	if err != nil {
-		return nil, err
-	}
-	return bkt, nil
-}
-
 func (b *BoltStorage) DeleteCatalog(_ context.Context, catalogName string) error {
 	return b.db.Update(func(tx *bolt.Tx) error {
-		catalogsBkt := tx.Bucket([]byte("catalogs"))
-		if catalogsBkt == nil {
-			return nil
-		}
-		catalogBkt := catalogsBkt.Bucket([]byte(catalogName))
-		if catalogBkt == nil {
-			return nil
-		}
-		return catalogsBkt.DeleteBucket([]byte(catalogName))
+		return b.deleteCatalogMetasTx(tx, tx.Bucket([]byte("metas")), catalogName)
 	})
+}
+
+func (b *BoltStorage) deleteCatalogMetasTx(tx *bolt.Tx, metasBkt *bolt.Bucket, catalogName string) error {
+	if metasBkt == nil {
+		return nil
+	}
+	prefix := []byte(fmt.Sprintf("%s-", catalogName))
+	c := metasBkt.Cursor()
+	for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+		if err := metasBkt.Delete(k); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (b *BoltStorage) Get(_ context.Context, name string, _ *metav1.GetOptions) (runtime.Object, error) {
 	gr := schema.GroupResource{Group: catalogdv1alpha1.GroupVersion.Group, Resource: "catalogmetadata"}
 	var m catalogdv1alpha1.CatalogMetadata
 	if err := b.db.View(func(tx *bolt.Tx) error {
-		catalogsBkt := tx.Bucket([]byte("catalogs"))
-		if catalogsBkt == nil {
+		metasBkt := tx.Bucket([]byte("metas"))
+		if metasBkt == nil {
 			return apierrors.NewNotFound(gr, name)
 		}
-
-		catalogBkts := []*bolt.Bucket{}
-		if err := catalogsBkt.ForEach(func(k, v []byte) error {
-			bkt := catalogsBkt.Bucket(k)
-			if bkt != nil {
-				catalogBkts = append(catalogBkts, bkt)
-			}
-			return nil
-		}); err != nil {
-			return apierrors.NewInternalError(err)
+		v := metasBkt.Get([]byte(name))
+		if v == nil {
+			return apierrors.NewNotFound(gr, name)
 		}
-
-		for _, catalogBkt := range catalogBkts {
-			if v := catalogBkt.Get([]byte(name)); v != nil {
-				if err := json.Unmarshal(v, &m); err != nil {
-					return apierrors.NewInternalError(err)
-				}
-				return nil
-			}
+		if err := json.Unmarshal(v, &m); err != nil {
+			return apierrors.NewInternalError(err)
 		}
 		return nil
 	}); err != nil {
@@ -114,45 +95,31 @@ func (b *BoltStorage) Get(_ context.Context, name string, _ *metav1.GetOptions) 
 func (b *BoltStorage) List(_ context.Context, options *internalversion.ListOptions) (runtime.Object, error) {
 	var list catalogdv1alpha1.CatalogMetadataList
 	if err := b.db.View(func(tx *bolt.Tx) error {
-		catalogsBkt := tx.Bucket([]byte("catalogs"))
-		if catalogsBkt == nil {
+		metasBkt := tx.Bucket([]byte("metas"))
+		if metasBkt == nil {
 			return nil
 		}
-
-		catalogBkts := []*bolt.Bucket{}
-		if err := catalogsBkt.ForEach(func(k, v []byte) error {
-			bkt := catalogsBkt.Bucket(k)
-			if bkt != nil {
-				catalogBkts = append(catalogBkts, bkt)
+		if err := metasBkt.ForEach(func(k, v []byte) error {
+			var m catalogdv1alpha1.CatalogMetadata
+			if err := json.Unmarshal(v, &m); err != nil {
+				return apierrors.NewInternalError(err)
 			}
+
+			if options.FieldSelector != nil {
+				if !options.FieldSelector.Matches(fields.Set{"metadata.name": m.Name}) {
+					return nil
+				}
+			}
+			if options.LabelSelector != nil {
+				if !options.LabelSelector.Matches(labels.Set(m.Labels)) {
+					return nil
+				}
+			}
+
+			list.Items = append(list.Items, m)
 			return nil
 		}); err != nil {
-			return apierrors.NewInternalError(err)
-		}
-
-		for _, catalogBkt := range catalogBkts {
-			if err := catalogBkt.ForEach(func(k, v []byte) error {
-				var m catalogdv1alpha1.CatalogMetadata
-				if err := json.Unmarshal(v, &m); err != nil {
-					return apierrors.NewInternalError(err)
-				}
-
-				if options.FieldSelector != nil {
-					if !options.FieldSelector.Matches(fields.Set{"metadata.name": m.Name}) {
-						return nil
-					}
-				}
-				if options.LabelSelector != nil {
-					if !options.LabelSelector.Matches(labels.Set(m.Labels)) {
-						return nil
-					}
-				}
-
-				list.Items = append(list.Items, m)
-				return nil
-			}); err != nil {
-				return err
-			}
+			return err
 		}
 		return nil
 	}); err != nil {
