@@ -34,7 +34,7 @@ type Unpacker interface {
 
 // Result conveys progress information about unpacking catalog content.
 type Result struct {
-	// Bundle contains the full filesystem of a catalog's root directory.
+	// FS contains the full filesystem of a catalog's root directory.
 	FS fs.FS
 
 	// ResolvedSource is a reproducible view of a Bundle's Source.

@@ -20,11 +20,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
@@ -44,6 +42,7 @@ import (
 	"github.com/operator-framework/catalogd/api/core/v1alpha1"
 	"github.com/operator-framework/catalogd/internal/source"
 	"github.com/operator-framework/catalogd/internal/version"
+	"github.com/operator-framework/catalogd/pkg/catalog"
 	corecontrollers "github.com/operator-framework/catalogd/pkg/controllers/core"
 	"github.com/operator-framework/catalogd/pkg/features"
 	"github.com/operator-framework/catalogd/pkg/profile"
@@ -143,7 +142,7 @@ func main() {
 		v1alpha1.SourceTypeImage: imageSource,
 	})
 
-	if err := mgr.AddMetricsExtraHandler("/catalogs/", catalogsHandler(filepath.Join(cacheDir, "wwwroot"))); err != nil {
+	if err := mgr.AddMetricsExtraHandler("/catalogs/", http.StripPrefix("/catalogs/", catalog.Handler(filepath.Join(cacheDir, "catalogs")))); err != nil {
 		setupLog.Error(err, "unable to add metrics extra handler")
 		os.Exit(1)
 	}
@@ -190,18 +189,17 @@ func podNamespace() string {
 }
 
 func directImageSource(ctx context.Context, cl client.Client, systemNamespace, cacheDir string) (source.Unpacker, error) {
-	imageDir := filepath.Join(cacheDir, "images")
-	contentRoot := filepath.Join(cacheDir, "content")
-	serveRoot := filepath.Join(cacheDir, "wwwroot")
+	imageStoreDir := filepath.Join(cacheDir, "image-store")
+	catalogsRoot := filepath.Join(cacheDir, "catalogs")
 	tmpRoot := filepath.Join(cacheDir, "tmp")
 
-	for _, dir := range []string{imageDir, contentRoot, serveRoot, tmpRoot} {
+	for _, dir := range []string{imageStoreDir, catalogsRoot, tmpRoot} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return nil, fmt.Errorf("unable to create directory %q: %w", dir, err)
 		}
 	}
 
-	imageStore, err := oci.NewWithContext(ctx, imageDir)
+	imageStore, err := oci.NewWithContext(ctx, imageStoreDir)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create image store: %w", err)
 	}
@@ -215,9 +213,8 @@ func directImageSource(ctx context.Context, cl client.Client, systemNamespace, c
 		},
 		ImageCache: imageStore,
 
-		ContentRoot: contentRoot,
-		ServeRoot:   serveRoot,
-		TmpRoot:     tmpRoot,
+		CatalogsRoot: catalogsRoot,
+		TmpRoot:      tmpRoot,
 	}, nil
 }
 
@@ -232,61 +229,4 @@ func podImageSource(mgr manager.Manager, systemNamespace, unpackImage string) (s
 		PodNamespace: systemNamespace,
 		UnpackImage:  unpackImage,
 	}, nil
-}
-
-func catalogsHandler(wwwRoot string) http.Handler {
-	fsHandler := http.FileServer(http.FS(&noDirsFS{os.DirFS(wwwRoot)}))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var etag string
-		contentPath, err := os.Readlink(filepath.Join(wwwRoot, r.URL.Path))
-		if err == nil {
-			etag = strings.TrimSuffix(filepath.Base(contentPath), ".json")
-		}
-		if etag != "" {
-			if r.Header.Get("If-None-Match") == etag {
-				w.Header().Set("ETag", etag)
-				w.WriteHeader(http.StatusNotModified)
-				return
-			}
-			w = etagWriter{w: w, etag: etag}
-		}
-		fsHandler.ServeHTTP(w, r)
-	})
-}
-
-type etagWriter struct {
-	w           http.ResponseWriter
-	etag        string
-	wroteHeader bool
-}
-
-func (s etagWriter) WriteHeader(code int) {
-	if s.wroteHeader == false {
-		s.w.Header().Set("ETag", s.etag)
-		s.wroteHeader = true
-	}
-	s.w.WriteHeader(code)
-}
-
-func (s etagWriter) Write(b []byte) (int, error) {
-	return s.w.Write(b)
-}
-
-func (s etagWriter) Header() http.Header {
-	return s.w.Header()
-}
-
-type noDirsFS struct {
-	fsys fs.FS
-}
-
-func (n noDirsFS) Open(name string) (fs.File, error) {
-	stat, err := fs.Stat(n.fsys, name)
-	if err != nil {
-		return nil, err
-	}
-	if stat.IsDir() {
-		return nil, os.ErrNotExist
-	}
-	return n.fsys.Open(name)
 }

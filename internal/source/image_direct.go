@@ -39,9 +39,27 @@ type ImageDirect struct {
 	GetSecret  func(context.Context, string) (*corev1.Secret, error)
 	ImageCache content.Storage
 
-	ContentRoot string
-	ServeRoot   string
-	TmpRoot     string
+	// TODO: Increment the retry count for each image that fails to unpack.
+	//   On subsequent calls to Unpack, use "Retrying" instead of "Unpacking"
+	//   if the retry count is > 0.
+	RetryCount map[string]int
+
+	// CatalogGoRoutineMap map[catalogName]*goroutine
+	// type goroutine struct {
+	//     cancel func()
+	//     imageRef string
+	//     refCount int
+	// }
+	// func (g *goroutine) Run() { incrementRefCount(); if refCount == 1 { go g.run() }}
+	// func (g *goroutine) Close() { decrementRefCount(); if refCount == 0 { g.cancel() }}
+	// func (g *goroutine) Result() *Result { return <-g.resultChan }
+	//
+	// NOTES:
+	//  1. When unpack is called for a catalog, we need to be able to lookup the current goroutine for it, regardless of what the current catalog's reference is.
+	//  2. Ideally its the catalog image reference that is used as the key. That way multiple catalogs that reference the same image can share the same goroutine.
+
+	CatalogsRoot string
+	TmpRoot      string
 }
 
 type unpackResult struct {
@@ -53,6 +71,8 @@ func (i ImageDirect) Unpack(ctx context.Context, catalog *v1alpha1.Catalog) (*Re
 	if catalog.Spec.Source.Type != v1alpha1.SourceTypeImage {
 		panic("source type image is unable to handle specified catalog source type " + string(catalog.Spec.Source.Type))
 	}
+
+	// TODO: move this to struct field
 	regClient := &auth.Client{
 		Client: retry.DefaultClient,
 		Header: http.Header{
@@ -72,8 +92,8 @@ func (i ImageDirect) Unpack(ctx context.Context, catalog *v1alpha1.Catalog) (*Re
 		if err := json.Unmarshal(pullSecret.Data[corev1.DockerConfigJsonKey], &cf); err != nil {
 			return nil, err
 		}
-		regClient.Credential = func(ctx context.Context, s string) (auth.Credential, error) {
-			authConfig, err := cf.GetAuthConfig(s)
+		regClient.Credential = func(ctx context.Context, imageRegistryHost string) (auth.Credential, error) {
+			authConfig, err := cf.GetAuthConfig(imageRegistryHost)
 			if err != nil {
 				return auth.Credential{}, err
 			}
@@ -95,10 +115,17 @@ func (i ImageDirect) Unpack(ctx context.Context, catalog *v1alpha1.Catalog) (*Re
 		Reference: ref,
 		ManifestMediaTypes: []string{
 			// Do not support manifest lists or image indexes.
+			// TODO: not sure what this actually does. Using a manifest list
+			//   for the image ref seems to work fine.
 			ocispec.MediaTypeImageManifest,
 			images.MediaTypeDockerSchema2Manifest,
 		},
 	}
+
+	// TODO: this resultChan stuff is a bit of a mess still. In it's current state, this function
+	//   is just a plain old synchronous function that happens to use a goroutine to do the work.
+	//   The intent is to make this function asynchronous, but that will require some refactoring
+	//   and bookkeeping.
 	resultChan := make(chan unpackResult)
 	go func() {
 		desc, err := repo.Resolve(ctx, ref.String())
@@ -107,12 +134,12 @@ func (i ImageDirect) Unpack(ctx context.Context, catalog *v1alpha1.Catalog) (*Re
 			return
 		}
 
-		contentFile := filepath.Join(i.ContentRoot, fmt.Sprintf("%s.json", desc.Digest))
+		contentDir := filepath.Join(i.CatalogsRoot, desc.Digest.String())
 		contentTmpDir := filepath.Join(i.TmpRoot, desc.Digest.String())
 		resolvedRef := fmt.Sprintf("%s/%s@%s", ref.Registry, ref.Repository, desc.Digest.String())
-		if _, err := os.Stat(contentFile); err != nil {
+		if _, err := os.Stat(contentDir); err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
-				handleError(resultChan, fmt.Errorf("unable to stat content file %q: %w", contentFile, err))
+				handleError(resultChan, fmt.Errorf("unable to stat content file %q: %w", contentDir, err))
 				return
 			}
 
@@ -154,32 +181,13 @@ func (i ImageDirect) Unpack(ctx context.Context, catalog *v1alpha1.Catalog) (*Re
 				return
 			}
 
-			if err := i.writeCatalogJSON(configsFS, contentFile); err != nil {
+			if err := i.writeCatalogJSON(configsFS, contentDir); err != nil {
 				handleError(resultChan, fmt.Errorf("unable to write catalog JSON for image %q: %w", resolvedRef, err))
-				return
-			}
-
-			tmpLinkPath := filepath.Join(contentTmpDir, "catalog.json")
-			if err := os.Symlink(contentFile, tmpLinkPath); err != nil {
-				handleError(resultChan, fmt.Errorf("unable to create symlink %q pointing to %q: %w", tmpLinkPath, contentFile, err))
-				return
-			}
-
-			serveLinkPath := filepath.Join(i.ServeRoot, "catalogs", catalog.Name, "all.json")
-			if oldContentPath, err := os.Readlink(serveLinkPath); err == nil {
-				defer os.RemoveAll(oldContentPath)
-			}
-			if err := os.MkdirAll(filepath.Dir(serveLinkPath), 0700); err != nil {
-				handleError(resultChan, fmt.Errorf("unable to create parent directory for symlink %q: %w", serveLinkPath, err))
-				return
-			}
-			if err := os.Rename(tmpLinkPath, serveLinkPath); err != nil {
-				handleError(resultChan, fmt.Errorf("unable to move symlink %q to %q: %w", tmpLinkPath, serveLinkPath, err))
 				return
 			}
 		}
 		result := &Result{
-			FS: os.DirFS(filepath.Join(i.ServeRoot, "catalogs", catalog.Name)),
+			FS: os.DirFS(contentDir),
 			ResolvedSource: &v1alpha1.CatalogSource{
 				Type: v1alpha1.SourceTypeImage,
 				Image: &v1alpha1.ImageSource{
@@ -221,21 +229,30 @@ func (i ImageDirect) unpackLayer(ctx context.Context, root string, desc ocispec.
 	return err
 }
 
-func (i *ImageDirect) writeCatalogJSON(fsys fs.FS, contentFilePath string) error {
-	contentFile, err := os.Create(contentFilePath)
-	if err != nil {
-		return fmt.Errorf("unable to create temporary catalog file: %w", err)
+func (i *ImageDirect) writeCatalogJSON(fsys fs.FS, contentDir string) error {
+	if err := os.MkdirAll(contentDir, 0700); err != nil {
+		return fmt.Errorf("unable to create content directory %q: %w", contentDir, err)
 	}
-	defer contentFile.Close()
-	if err := declcfg.WalkMetasFS(fsys, func(path string, meta *declcfg.Meta, err error) error {
+	if err := func() error {
+		contentFilePath := filepath.Join(contentDir, "all.json")
+		contentFile, err := os.Create(contentFilePath)
 		if err != nil {
-			return err
+			return fmt.Errorf("unable to create temporary catalog file: %w", err)
 		}
-		_, copyErr := io.Copy(contentFile, bytes.NewReader(meta.Blob))
-		return copyErr
-	}); err != nil {
-		os.Remove(contentFilePath)
-		return fmt.Errorf("unable to write catalog file: %w", err)
+		defer contentFile.Close()
+		if err := declcfg.WalkMetasFS(fsys, func(path string, meta *declcfg.Meta, err error) error {
+			if err != nil {
+				return err
+			}
+			_, copyErr := io.Copy(contentFile, bytes.NewReader(meta.Blob))
+			return copyErr
+		}); err != nil {
+			return fmt.Errorf("unable to write catalog file: %w", err)
+		}
+		return nil
+	}(); err != nil {
+		os.RemoveAll(contentDir)
+		return err
 	}
 	return nil
 }

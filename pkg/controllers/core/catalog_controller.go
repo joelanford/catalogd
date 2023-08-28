@@ -167,6 +167,7 @@ func (r *CatalogReconciler) reconcile(ctx context.Context, catalog *v1alpha1.Cat
 			}
 		}
 
+		// TODO: this should be the file name that has the catalogs/<digest>/all.json
 		catalog.Status.ContentURL = fmt.Sprintf("http://catalogd-catalogs.catalogd-system.svc/catalogs/%s/all.json", catalog.Name)
 		updateStatusUnpacked(&catalog.Status, unpackResult)
 		return ctrl.Result{}, nil
