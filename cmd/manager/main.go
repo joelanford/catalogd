@@ -215,6 +215,8 @@ func directImageSource(ctx context.Context, cl client.Client, systemNamespace, c
 
 		CatalogsRoot: catalogsRoot,
 		TmpRoot:      tmpRoot,
+
+		UseCache: true,
 	}, nil
 }
 

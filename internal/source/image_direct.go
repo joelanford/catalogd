@@ -60,6 +60,8 @@ type ImageDirect struct {
 
 	CatalogsRoot string
 	TmpRoot      string
+
+	UseCache bool
 }
 
 type unpackResult struct {
@@ -143,14 +145,18 @@ func (i ImageDirect) Unpack(ctx context.Context, catalog *v1alpha1.Catalog) (*Re
 				return
 			}
 
-			if err := oras.CopyGraph(ctx, repo, i.ImageCache, desc, oras.CopyGraphOptions{
-				Concurrency: runtime.NumCPU(),
-			}); err != nil {
-				handleError(resultChan, fmt.Errorf("unable to download image %q: %w", resolvedRef, err))
-				return
-			}
+			var fetcher content.Fetcher = repo
+			if i.UseCache {
+				fetcher = i.ImageCache
+				if err := oras.CopyGraph(ctx, repo, i.ImageCache, desc, oras.CopyGraphOptions{
+					Concurrency: runtime.NumCPU(),
+				}); err != nil {
+					handleError(resultChan, fmt.Errorf("unable to download image %q: %w", resolvedRef, err))
+					return
+				}
 
-			rc, err := i.ImageCache.Fetch(ctx, desc)
+			}
+			rc, err := fetcher.Fetch(ctx, desc)
 			if err != nil {
 				handleError(resultChan, fmt.Errorf("unable to fetch image %q from cache: %w", resolvedRef, err))
 				return
@@ -169,7 +175,7 @@ func (i ImageDirect) Unpack(ctx context.Context, catalog *v1alpha1.Catalog) (*Re
 			defer os.RemoveAll(contentTmpDir)
 
 			for _, layerDesc := range image.Layers {
-				if err := i.unpackLayer(ctx, contentTmpDir, layerDesc); err != nil {
+				if err := i.unpackLayer(ctx, contentTmpDir, layerDesc, fetcher); err != nil {
 					handleError(resultChan, fmt.Errorf("unable to unpack layer %q for image %q: %w", layerDesc.Digest.String(), resolvedRef, err))
 					return
 				}
@@ -208,19 +214,19 @@ func handleError(resultChan chan<- unpackResult, err error) {
 	resultChan <- unpackResult{nil, err}
 }
 
-func (i ImageDirect) unpackLayer(ctx context.Context, root string, desc ocispec.Descriptor) error {
-	rc, err := i.ImageCache.Fetch(ctx, desc)
+func (i ImageDirect) unpackLayer(ctx context.Context, root string, desc ocispec.Descriptor, fetcher content.Fetcher) error {
+	compressedTarReader, err := fetcher.Fetch(ctx, desc)
 	if err != nil {
 		return err
 	}
-	defer rc.Close()
-	drc, err := compression.DecompressStream(rc)
+	defer compressedTarReader.Close()
+	tarReader, err := compression.DecompressStream(compressedTarReader)
 	if err != nil {
 		return err
 	}
-	defer drc.Close()
+	defer tarReader.Close()
 
-	_, err = archive.Apply(ctx, root, drc, archive.WithFilter(func(h *tar.Header) (bool, error) {
+	_, err = archive.Apply(ctx, root, tarReader, archive.WithFilter(func(h *tar.Header) (bool, error) {
 		h.Uid = os.Getuid()
 		h.Gid = os.Getgid()
 		dir, file := filepath.Split(h.Name)
