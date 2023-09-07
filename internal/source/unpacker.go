@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"os"
 
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 
 	catalogdv1alpha1 "github.com/operator-framework/catalogd/api/core/v1alpha1"
+	"github.com/operator-framework/catalogd/pkg/features"
 )
 
 // TODO: This package is almost entirely copy/pasted from rukpak. We should look
@@ -93,12 +95,27 @@ func (s *unpacker) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Catalog
 	return source.Unpack(ctx, catalog)
 }
 
+const unpackPath = "/var/cache/unpack"
+
 // NewDefaultUnpacker returns a new composite Source that unpacks catalogs using
 // a default source mapping with built-in implementations of all of the supported
 // source types.
 //
 // TODO: refactor NewDefaultUnpacker due to growing parameter list
 func NewDefaultUnpacker(systemNsCluster cluster.Cluster, namespace, unpackImage string) (Unpacker, error) {
+	if features.CatalogdFeatureGate.Enabled(features.UnpackImageRegistryClient) {
+		if err := os.MkdirAll(unpackPath, 0700); err != nil {
+			return nil, fmt.Errorf("creating unpack cache directory: %w", err)
+		}
+
+		return NewUnpacker(map[catalogdv1alpha1.SourceType]Unpacker{
+			catalogdv1alpha1.SourceTypeImage: &ImageRegistry{
+				BaseCachePath: unpackPath,
+				AuthNamespace: namespace,
+			},
+		}), nil
+	}
+
 	cfg := systemNsCluster.GetConfig()
 	kubeClient, err := kubernetes.NewForConfig(cfg)
 	if err != nil {

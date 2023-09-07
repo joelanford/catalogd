@@ -50,8 +50,8 @@ spec:
         image: controller:latest
         name: manager
         volumeMounts:
-            - name: catalog-cache
-              mountPath: /var/cache/catalogs
+            - name: cache
+              mountPath: /var/cache/
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -77,5 +77,5 @@ spec:
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
       volumes:
-        - name: catalog-cache
+        - name: cache
           emptyDir: {}

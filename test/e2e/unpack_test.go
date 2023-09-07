@@ -20,6 +20,8 @@ import (
 	catalogd "github.com/operator-framework/catalogd/api/core/v1alpha1"
 )
 
+// TODO: figure out how to get image loaded onto the cluster when using an image registry client
+
 const (
 	catalogRefEnvVar = "TEST_CATALOG_IMAGE"
 	catalogName      = "test-catalog"

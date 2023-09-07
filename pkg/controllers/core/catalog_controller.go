@@ -50,6 +50,7 @@ type CatalogReconciler struct {
 //+kubebuilder:rbac:groups=catalogd.operatorframework.io,resources=catalogs/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=create;update;patch;delete;get;list;watch
 //+kubebuilder:rbac:groups=core,resources=pods/log,verbs=get;list;watch
+//+kubebuilder:rbac:groups=core,namespace=catalogd-system,resources=secrets,verbs=get;
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
