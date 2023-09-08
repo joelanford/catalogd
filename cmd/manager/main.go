@@ -124,6 +124,7 @@ func main() {
 
 	if err := os.MkdirAll(cacheDir, 0700); err != nil {
 		setupLog.Error(err, "unable to create cache directory")
+		os.Exit(1)
 	}
 
 	unpacker, err := source.NewDefaultUnpacker(mgr, systemNamespace, unpackImage, cacheDir)
