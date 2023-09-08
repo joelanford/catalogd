@@ -17,7 +17,8 @@ limitations under the License.
 package core
 
 import (
-	"context" // #nosec
+	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -118,7 +119,11 @@ func (r *CatalogReconciler) reconcile(ctx context.Context, catalog *v1alpha1.Cat
 	}
 	unpackResult, err := r.Unpacker.Unpack(ctx, catalog)
 	if err != nil {
-		return ctrl.Result{}, updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("source bundle content: %v", err))
+		statusErr := updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("source bundle content: %v", err))
+		if errors.Is(err, &source.UnrecoverableError{}) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, statusErr
 	}
 
 	switch unpackResult.State {

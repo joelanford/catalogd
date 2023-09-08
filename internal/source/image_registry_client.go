@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -33,7 +32,7 @@ const configDirLabel = "operators.operatorframework.io.index.configs.v1"
 
 func (i *ImageRegistry) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Catalog) (*Result, error) {
 	if catalog.Spec.Source.Type != catalogdv1alpha1.SourceTypeImage {
-		panic(fmt.Sprintf("source type %q is unable to handle specified catalog source type %q", catalogdv1alpha1.SourceTypeImage, catalog.Spec.Source.Type))
+		panic(fmt.Sprintf("programmer error: source type %q is unable to handle specified catalog source type %q", catalogdv1alpha1.SourceTypeImage, catalog.Spec.Source.Type))
 	}
 
 	if catalog.Spec.Source.Image == nil {
@@ -42,7 +41,7 @@ func (i *ImageRegistry) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Ca
 
 	imgRef, err := name.ParseReference(catalog.Spec.Source.Image.Ref)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing image reference: %w", err)
+		return nil, NewUnrecoverableError(fmt.Errorf("error parsing image reference: %w", err))
 	}
 
 	remoteOpts := []remote.Option{}
@@ -69,14 +68,12 @@ func (i *ImageRegistry) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Ca
 		return nil, fmt.Errorf("error fetching image descriptor: %w", err)
 	}
 
-	var dirToUnpack string
-	dirToUnpack, ok := imgDesc.Annotations[configDirLabel]
-	if !ok {
-		// fallback to the default of `configs/`
-		dirToUnpack = "/configs"
+	dirToUnpack := imgDesc.Annotations[configDirLabel]
+	if dirToUnpack == "" {
+		dirToUnpack = "configs"
 	}
 
-	unpackPath := path.Join(i.BaseCachePath, imgRef.Name(), imgDesc.Digest.Hex)
+	unpackPath := filepath.Join(i.BaseCachePath, catalog.Name, imgDesc.Digest.Hex)
 	if _, err = os.Stat(unpackPath); errors.Is(err, os.ErrNotExist) {
 		if err = os.MkdirAll(unpackPath, 0700); err != nil {
 			return nil, fmt.Errorf("error creating unpack path: %w", err)
@@ -117,13 +114,17 @@ func unpackImage(ctx context.Context, imgRef name.Reference, unpackPath, dirToUn
 		return fmt.Errorf("error getting image layers: %w", err)
 	}
 
+	dirBase := filepath.Base(dirToUnpack)
 	for _, layer := range layers {
 		layerRc, err := layer.Uncompressed()
 		if err != nil {
 			return fmt.Errorf("error getting uncompressed layer data: %w", err)
 		}
 
-		dirBase := path.Base(dirToUnpack)
+		// Apply the layer contents, but filter on the directory that contains catalog contents so we only cache the
+		// catalog contents and nothing else. This filter ensures that the files created have the proper UID and GID
+		// for the filesystem they will be stored on to ensure no permission errors occur when attempting to create the
+		// files.
 		_, err = archive.Apply(ctx, unpackPath, layerRc, archive.WithFilter(func(th *tar.Header) (bool, error) {
 			th.Uid = os.Getuid()
 			th.Gid = os.Getgid()
