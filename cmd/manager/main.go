@@ -55,6 +55,8 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
+const storageDir = "catalogs"
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
@@ -71,8 +73,8 @@ func main() {
 		profiling            bool
 		catalogdVersion      bool
 		systemNamespace      string
-		storageDir           string
 		catalogServerAddr    string
+		cacheDir             string
 	)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -82,8 +84,8 @@ func main() {
 	// TODO: should we move the unpacker to some common place? Or... hear me out... should catalogd just be a rukpak provisioner?
 	flag.StringVar(&unpackImage, "unpack-image", "quay.io/operator-framework/rukpak:v0.12.0", "The unpack image to use when unpacking catalog images")
 	flag.StringVar(&systemNamespace, "system-namespace", "", "The namespace catalogd uses for internal state, configuration, and workloads")
-	flag.StringVar(&storageDir, "catalogs-storage-dir", "/var/cache/catalogs", "The directory in the filesystem where unpacked catalog content will be stored and served from")
 	flag.StringVar(&catalogServerAddr, "catalogs-server-addr", ":8083", "The address where the unpacked catalogs' content will be accessible")
+	flag.StringVar(&cacheDir, "catalogd-cache-dir", "/var/cache/", "The directory in the filesystem that catalogd will use for file based caching")
 	flag.BoolVar(&profiling, "profiling", false, "enable profiling endpoints to allow for using pprof")
 	flag.BoolVar(&catalogdVersion, "version", false, "print the catalogd version and exit")
 	opts := zap.Options{
@@ -120,7 +122,11 @@ func main() {
 		systemNamespace = podNamespace()
 	}
 
-	unpacker, err := source.NewDefaultUnpacker(mgr, systemNamespace, unpackImage)
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		setupLog.Error(err, "unable to create cache directory")
+	}
+
+	unpacker, err := source.NewDefaultUnpacker(mgr, systemNamespace, unpackImage, cacheDir)
 	if err != nil {
 		setupLog.Error(err, "unable to create unpacker")
 		os.Exit(1)

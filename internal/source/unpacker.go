@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -95,15 +96,16 @@ func (s *unpacker) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Catalog
 	return source.Unpack(ctx, catalog)
 }
 
-const unpackPath = "/var/cache/unpack"
+const unpackCacheDir = "unpack"
 
 // NewDefaultUnpacker returns a new composite Source that unpacks catalogs using
 // a default source mapping with built-in implementations of all of the supported
 // source types.
 //
 // TODO: refactor NewDefaultUnpacker due to growing parameter list
-func NewDefaultUnpacker(systemNsCluster cluster.Cluster, namespace, unpackImage string) (Unpacker, error) {
+func NewDefaultUnpacker(systemNsCluster cluster.Cluster, namespace, unpackImage, cacheDir string) (Unpacker, error) {
 	if features.CatalogdFeatureGate.Enabled(features.UnpackImageRegistryClient) {
+		unpackPath := path.Join(cacheDir, unpackCacheDir)
 		if err := os.MkdirAll(unpackPath, 0700); err != nil {
 			return nil, fmt.Errorf("creating unpack cache directory: %w", err)
 		}
