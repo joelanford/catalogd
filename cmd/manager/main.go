@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -137,12 +138,12 @@ func main() {
 	if features.CatalogdFeatureGate.Enabled(features.HTTPServer) {
 		metrics.Registry.MustRegister(catalogdmetrics.RequestDurationMetric)
 
-		if err := os.MkdirAll(storageDir, 0700); err != nil {
+		if err := os.MkdirAll(filepath.Join(cacheDir, storageDir), 0700); err != nil {
 			setupLog.Error(err, "unable to create storage directory for catalogs")
 			os.Exit(1)
 		}
 
-		localStorage = storage.LocalDir{RootDir: storageDir}
+		localStorage = storage.LocalDir{RootDir: filepath.Join(cacheDir, storageDir)}
 		shutdownTimeout := 30 * time.Second
 		catalogServer := server.Server{
 			Kind: "catalogs",
