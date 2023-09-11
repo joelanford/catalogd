@@ -67,15 +67,17 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr          string
-		enableLeaderElection bool
-		probeAddr            string
-		unpackImage          string
-		profiling            bool
-		catalogdVersion      bool
-		systemNamespace      string
-		catalogServerAddr    string
-		cacheDir             string
+		metricsAddr                       string
+		enableLeaderElection              bool
+		probeAddr                         string
+		unpackImage                       string
+		profiling                         bool
+		catalogdVersion                   bool
+		systemNamespace                   string
+		catalogServerAddr                 string
+		cacheDir                          string
+		garbageCollectionSyncInterval     time.Duration
+		garbageCollectionPreserveInterval time.Duration
 	)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -89,6 +91,8 @@ func main() {
 	flag.StringVar(&cacheDir, "catalogd-cache-dir", "/var/cache/", "The directory in the filesystem that catalogd will use for file based caching")
 	flag.BoolVar(&profiling, "profiling", false, "enable profiling endpoints to allow for using pprof")
 	flag.BoolVar(&catalogdVersion, "version", false, "print the catalogd version and exit")
+	flag.DurationVar(&garbageCollectionSyncInterval, "catalog-cache-sync-interval", 15*time.Minute, "Interval in which to garbage collect unused catalog information from the cache. Only used when the UnpackImageRegistryClient feature gate is enabled")
+	flag.DurationVar(&garbageCollectionPreserveInterval, "catalog-cache-preserve-interval", time.Hour, "Interval in which to preserve cached catalog data. Only used when the UnpackImageRegistryClient feature gate is enabled")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -187,6 +191,16 @@ func main() {
 			setupLog.Error(err, "unable to setup pprof configuration")
 			os.Exit(1)
 		}
+	}
+
+	if features.CatalogdFeatureGate.Enabled(features.UnpackImageRegistryClient) {
+		mgr.Add(&source.CatalogCacheGarbageCollector{
+			Cache:            mgr.GetCache(),
+			SyncInterval:     garbageCollectionSyncInterval,
+			PreserveInterval: garbageCollectionPreserveInterval,
+			Logger:           ctrl.Log.WithName("gc"),
+			CachePath:        filepath.Join(cacheDir, source.UnpackCacheDir),
+		})
 	}
 
 	setupLog.Info("starting manager")

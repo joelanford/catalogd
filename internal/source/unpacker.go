@@ -96,7 +96,7 @@ func (s *unpacker) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Catalog
 	return source.Unpack(ctx, catalog)
 }
 
-const unpackCacheDir = "unpack"
+const UnpackCacheDir = "unpack"
 
 // NewDefaultUnpacker returns a new composite Source that unpacks catalogs using
 // a default source mapping with built-in implementations of all of the supported
@@ -105,7 +105,7 @@ const unpackCacheDir = "unpack"
 // TODO: refactor NewDefaultUnpacker due to growing parameter list
 func NewDefaultUnpacker(systemNsCluster cluster.Cluster, namespace, unpackImage, cacheDir string) (Unpacker, error) {
 	if features.CatalogdFeatureGate.Enabled(features.UnpackImageRegistryClient) {
-		unpackPath := path.Join(cacheDir, unpackCacheDir)
+		unpackPath := path.Join(cacheDir, UnpackCacheDir)
 		if err := os.MkdirAll(unpackPath, 0700); err != nil {
 			return nil, fmt.Errorf("creating unpack cache directory: %w", err)
 		}

@@ -18,8 +18,7 @@ import (
 	catalogdv1alpha1 "github.com/operator-framework/catalogd/api/core/v1alpha1"
 )
 
-// TODO: Add garbage collection to remove any unused
-// images/SHAs that exist in the cache
+// TODO: Improve garbage collection
 
 // TODO: Make asynchronous
 
@@ -36,7 +35,7 @@ func (i *ImageRegistry) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Ca
 	}
 
 	if catalog.Spec.Source.Image == nil {
-		return nil, fmt.Errorf("error parsing catalog, catalog %s has a nil image source", catalog.Name)
+		return nil, NewUnrecoverableError(fmt.Errorf("error parsing catalog, catalog %s has a nil image source", catalog.Name))
 	}
 
 	imgRef, err := name.ParseReference(catalog.Spec.Source.Image.Ref)

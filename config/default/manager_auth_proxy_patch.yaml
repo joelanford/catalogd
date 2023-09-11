@@ -52,3 +52,5 @@ spec:
         - "--leader-elect"
         - "--catalogd-cache-dir=/var/cache"
         - "--feature-gates=HTTPServer=true,UnpackImageRegistryClient=false"
+        - "--catalog-cache-sync-interval=1m"
+        - "--catalog-cache-preserve-interval=5m"
