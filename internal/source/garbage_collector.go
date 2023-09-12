@@ -2,16 +2,12 @@ package source
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/google/go-containerregistry/pkg/name"
 	catalogdv1alpha1 "github.com/operator-framework/catalogd/api/core/v1alpha1"
-	"k8s.io/apimachinery/pkg/util/sets"
 	toolscache "k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -44,6 +40,9 @@ type CatalogCacheGarbageCollector struct {
 // Start implements the manager.Runnable interface so that the garbage collector
 // can be run with a controller-runtime manager as its own process
 func (gc *CatalogCacheGarbageCollector) Start(ctx context.Context) error {
+	// Create a channel to use as a queue for performing cache deletion
+	deleteChannel := make(chan *catalogdv1alpha1.Catalog)
+
 	// Fetch the Catalog informer from the cache and add an event handler
 	// that removes all cached data for a Catalog when it is deleted from
 	// the cluster.
@@ -54,89 +53,38 @@ func (gc *CatalogCacheGarbageCollector) Start(ctx context.Context) error {
 
 	_, err = catalogInformer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 		DeleteFunc: func(obj interface{}) {
-			catalog := obj.(*catalogdv1alpha1.Catalog)
-			if catalog.Spec.Source.Type != catalogdv1alpha1.SourceTypeImage {
+			var objToCast interface{}
+			dfu, ok := obj.(*toolscache.DeletedFinalStateUnknown)
+			if ok {
+				objToCast = dfu.Obj
+			} else {
+				objToCast = obj
+			}
+			catalog, ok := objToCast.(*catalogdv1alpha1.Catalog)
+			if !ok || catalog.Spec.Source.Type != catalogdv1alpha1.SourceTypeImage {
 				return
 			}
-			filename := filepath.Join(gc.CachePath, catalog.Name)
-			gc.Logger.Info("removing file", "path", filename)
-			if err := os.RemoveAll(filename); err != nil {
-				gc.Logger.Error(err, "failed to remove file", "path", filename)
-			}
+			deleteChannel <- catalog
 		},
 	})
 	if err != nil {
 		return err
 	}
 
-	// Wait for the cache to sync to ensure that our Catalog List calls
-	// in the below loop see a full view of the catalog that exist in
-	// the cluster.
-	if ok := gc.Cache.WaitForCacheSync(ctx); !ok {
-		if ctx.Err() == nil {
-			return fmt.Errorf("cache did not sync")
-		}
-		return fmt.Errorf("cache did not sync: %v", ctx.Err())
-	}
-
-	// Garbage collect every X amount of time, where X is the
-	// provided sync interval
-	ticker := time.NewTicker(gc.SyncInterval)
-	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-ticker.C:
-			gc.Logger.Info("running garbage collection")
+		case catalog := <-deleteChannel:
+			pathToGc := filepath.Join(gc.CachePath, catalog.Name)
+			gc.Logger.Info("running garbage collection",
+				"catalog",
+				catalog.Name,
+				"path",
+				pathToGc)
 
-			catalogList := &catalogdv1alpha1.CatalogList{}
-			if err := gc.Cache.List(ctx, catalogList); err != nil {
-				gc.Logger.Error(err, "error listing catalogs for cache garbage collection")
-				continue
-			}
-
-			// For each catalog get a list of files that are safe to remove
-			filesToRemove := sets.NewString()
-			for _, catalog := range catalogList.Items {
-				cacheEntries, err := os.ReadDir(filepath.Join(gc.CachePath, catalog.Name))
-				if err != nil {
-					gc.Logger.Error(err, "reading cache for catalog", catalog.Name)
-				}
-
-				if catalog.Status.ResolvedSource != nil && catalog.Status.ResolvedSource.Image != nil {
-					digest, err := name.NewDigest(catalog.Status.ResolvedSource.Image.Ref)
-					if err != nil {
-						gc.Logger.Error(err, "error parsing digest from resolved source")
-						break
-					}
-					gc.Logger.Info("digesting....")
-					digStr := strings.Split(digest.DigestStr(), ":")[1]
-					for _, e := range cacheEntries {
-						if e.Name() == digStr {
-							continue
-						}
-
-						fInfo, err := e.Info()
-						if err != nil {
-							continue
-						}
-
-						if time.Since(fInfo.ModTime()) <= gc.PreserveInterval {
-							gc.Logger.Info("preserving cached file", "file", e.Name())
-							continue
-						}
-
-						filesToRemove.Insert(filepath.Join(gc.CachePath, catalog.Name, e.Name()))
-					}
-				}
-			}
-
-			for _, path := range filesToRemove.List() {
-				gc.Logger.Info("removing file", "path", path)
-				if err := os.RemoveAll(path); err != nil {
-					gc.Logger.Error(err, "failed to remove file", "path", path)
-				}
+			if err := os.RemoveAll(pathToGc); err != nil {
+				gc.Logger.Error(err, "removing file", "path", pathToGc)
 			}
 		}
 	}
