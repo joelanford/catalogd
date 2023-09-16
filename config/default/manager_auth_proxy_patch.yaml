@@ -50,7 +50,3 @@ spec:
         - "--health-probe-bind-address=:8081"
         - "--metrics-bind-address=127.0.0.1:8080"
         - "--leader-elect"
-        - "--catalogd-cache-dir=/var/cache"
-        - "--feature-gates=HTTPServer=true,UnpackImageRegistryClient=false"
-        - "--catalog-cache-sync-interval=1m"
-        - "--catalog-cache-preserve-interval=5m"

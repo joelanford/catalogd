@@ -24,20 +24,17 @@ import (
 	"path/filepath"
 	"time"
 
-	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
-	// to ensure that exec-entrypoint and run can make use of them.
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
-
+	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/spf13/pflag"
-
+	"github.com/operator-framework/catalogd/api/core/v1alpha1"
 	"github.com/operator-framework/catalogd/internal/source"
 	"github.com/operator-framework/catalogd/internal/third_party/server"
 	"github.com/operator-framework/catalogd/internal/version"
@@ -46,9 +43,6 @@ import (
 	catalogdmetrics "github.com/operator-framework/catalogd/pkg/metrics"
 	"github.com/operator-framework/catalogd/pkg/profile"
 	"github.com/operator-framework/catalogd/pkg/storage"
-
-	//+kubebuilder:scaffold:imports
-	"github.com/operator-framework/catalogd/api/core/v1alpha1"
 )
 
 var (
@@ -67,17 +61,15 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr                       string
-		enableLeaderElection              bool
-		probeAddr                         string
-		unpackImage                       string
-		profiling                         bool
-		catalogdVersion                   bool
-		systemNamespace                   string
-		catalogServerAddr                 string
-		cacheDir                          string
-		garbageCollectionSyncInterval     time.Duration
-		garbageCollectionPreserveInterval time.Duration
+		metricsAddr          string
+		enableLeaderElection bool
+		probeAddr            string
+		unpackImage          string
+		profiling            bool
+		catalogdVersion      bool
+		systemNamespace      string
+		catalogServerAddr    string
+		cacheDir             string
 	)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -88,11 +80,9 @@ func main() {
 	flag.StringVar(&unpackImage, "unpack-image", "quay.io/operator-framework/rukpak:v0.12.0", "The unpack image to use when unpacking catalog images")
 	flag.StringVar(&systemNamespace, "system-namespace", "", "The namespace catalogd uses for internal state, configuration, and workloads")
 	flag.StringVar(&catalogServerAddr, "catalogs-server-addr", ":8083", "The address where the unpacked catalogs' content will be accessible")
-	flag.StringVar(&cacheDir, "catalogd-cache-dir", "/var/cache/", "The directory in the filesystem that catalogd will use for file based caching")
+	flag.StringVar(&cacheDir, "cache-dir", "/var/cache/", "The directory in the filesystem that catalogd will use for file based caching")
 	flag.BoolVar(&profiling, "profiling", false, "enable profiling endpoints to allow for using pprof")
 	flag.BoolVar(&catalogdVersion, "version", false, "print the catalogd version and exit")
-	flag.DurationVar(&garbageCollectionSyncInterval, "catalog-cache-sync-interval", 15*time.Minute, "Interval in which to garbage collect unused catalog information from the cache. Only used when the UnpackImageRegistryClient feature gate is enabled")
-	flag.DurationVar(&garbageCollectionPreserveInterval, "catalog-cache-preserve-interval", time.Hour, "Interval in which to preserve cached catalog data. Only used when the UnpackImageRegistryClient feature gate is enabled")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -195,11 +185,9 @@ func main() {
 
 	if features.CatalogdFeatureGate.Enabled(features.UnpackImageRegistryClient) {
 		mgr.Add(&source.CatalogCacheGarbageCollector{
-			Cache:            mgr.GetCache(),
-			SyncInterval:     garbageCollectionSyncInterval,
-			PreserveInterval: garbageCollectionPreserveInterval,
-			Logger:           ctrl.Log.WithName("gc"),
-			CachePath:        filepath.Join(cacheDir, source.UnpackCacheDir),
+			Cache:     mgr.GetCache(),
+			Logger:    mgr.GetLogger().WithName("gc"),
+			CachePath: filepath.Join(cacheDir, source.UnpackCacheDir),
 		})
 	}
 

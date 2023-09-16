@@ -25,13 +25,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	apimacherrors "k8s.io/apimachinery/pkg/util/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/operator-framework/catalogd/api/core/v1alpha1"
+	catalogderrors "github.com/operator-framework/catalogd/internal/errors"
 	"github.com/operator-framework/catalogd/internal/source"
 	"github.com/operator-framework/catalogd/pkg/features"
 	"github.com/operator-framework/catalogd/pkg/storage"
@@ -60,7 +60,10 @@ type CatalogReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.11.0/pkg/reconcile
 func (r *CatalogReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// TODO: Where and when should we be logging errors and at which level?
-	_ = log.FromContext(ctx).WithName("catalogd-controller")
+	l := log.FromContext(ctx).WithName("catalogd-controller")
+	ctx = log.IntoContext(ctx, l)
+	l.V(1).Info("reconcile started")
+	defer l.V(1).Info("reconcile finished")
 
 	existingCatsrc := v1alpha1.Catalog{}
 	if err := r.Client.Get(ctx, req.NamespacedName, &existingCatsrc); err != nil {
@@ -68,6 +71,11 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	reconciledCatsrc := existingCatsrc.DeepCopy()
 	res, reconcileErr := r.reconcile(ctx, reconciledCatsrc)
+
+	if errors.As(reconcileErr, &catalogderrors.UnrecoverableError{}) {
+		l.Error(reconcileErr, "unrecoverable error")
+		reconcileErr = nil
+	}
 
 	// Update the status subresource before updating the main object. This is
 	// necessary because, in many cases, the main object update will remove the
@@ -77,13 +85,13 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// a potential deletion.
 	if !equality.Semantic.DeepEqual(existingCatsrc.Status, reconciledCatsrc.Status) {
 		if updateErr := r.Client.Status().Update(ctx, reconciledCatsrc); updateErr != nil {
-			return res, apimacherrors.NewAggregate([]error{reconcileErr, updateErr})
+			return res, errors.Join(reconcileErr, updateErr)
 		}
 	}
 	existingCatsrc.Status, reconciledCatsrc.Status = v1alpha1.CatalogStatus{}, v1alpha1.CatalogStatus{}
 	if !equality.Semantic.DeepEqual(existingCatsrc, reconciledCatsrc) {
 		if updateErr := r.Client.Update(ctx, reconciledCatsrc); updateErr != nil {
-			return res, apimacherrors.NewAggregate([]error{reconcileErr, updateErr})
+			return res, errors.Join(reconcileErr, updateErr)
 		}
 	}
 	return res, reconcileErr
@@ -114,16 +122,15 @@ func (r *CatalogReconciler) reconcile(ctx context.Context, catalog *v1alpha1.Cat
 		if err := r.Storage.Delete(catalog.Name); err != nil {
 			return ctrl.Result{}, updateStatusStorageDeleteError(&catalog.Status, err)
 		}
+		if err := r.Unpacker.Cleanup(ctx, catalog); err != nil {
+			return ctrl.Result{}, updateStatusStorageDeleteError(&catalog.Status, err)
+		}
 		controllerutil.RemoveFinalizer(catalog, fbcDeletionFinalizer)
 		return ctrl.Result{}, nil
 	}
 	unpackResult, err := r.Unpacker.Unpack(ctx, catalog)
 	if err != nil {
-		statusErr := updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("source bundle content: %v", err))
-		if errors.Is(err, &source.UnrecoverableError{}) {
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, statusErr
+		return ctrl.Result{}, updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("source bundle content: %v", err))
 	}
 
 	switch unpackResult.State {

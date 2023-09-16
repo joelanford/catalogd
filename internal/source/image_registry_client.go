@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,8 +15,10 @@ import (
 	gcrkube "github.com/google/go-containerregistry/pkg/authn/kubernetes"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	catalogdv1alpha1 "github.com/operator-framework/catalogd/api/core/v1alpha1"
+	catalogderrors "github.com/operator-framework/catalogd/internal/errors"
 )
 
 // TODO: Improve garbage collection
@@ -30,17 +33,18 @@ type ImageRegistry struct {
 const configDirLabel = "operators.operatorframework.io.index.configs.v1"
 
 func (i *ImageRegistry) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Catalog) (*Result, error) {
+	l := log.FromContext(ctx)
 	if catalog.Spec.Source.Type != catalogdv1alpha1.SourceTypeImage {
 		panic(fmt.Sprintf("programmer error: source type %q is unable to handle specified catalog source type %q", catalogdv1alpha1.SourceTypeImage, catalog.Spec.Source.Type))
 	}
 
 	if catalog.Spec.Source.Image == nil {
-		return nil, NewUnrecoverableError(fmt.Errorf("error parsing catalog, catalog %s has a nil image source", catalog.Name))
+		return nil, catalogderrors.NewUnrecoverableError(fmt.Errorf("error parsing catalog, catalog %s has a nil image source", catalog.Name))
 	}
 
 	imgRef, err := name.ParseReference(catalog.Spec.Source.Image.Ref)
 	if err != nil {
-		return nil, NewUnrecoverableError(fmt.Errorf("error parsing image reference: %w", err))
+		return nil, catalogderrors.NewUnrecoverableError(fmt.Errorf("error parsing image reference: %w", err))
 	}
 
 	remoteOpts := []remote.Option{}
@@ -61,19 +65,33 @@ func (i *ImageRegistry) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Ca
 		remoteOpts = append(remoteOpts, remote.WithAuthFromKeychain(authChain))
 	}
 
-	// always fetch the hash
+	// If the image reference is a digest and already exists in the cache,
+	// we can skip a network call and directly return the cached result.
+	if digestRef, ok := imgRef.(name.Digest); ok {
+		unpackPath := filepath.Join(i.BaseCachePath, catalog.Name, digestRef.DigestStr())
+		if stat, err := os.Stat(unpackPath); err == nil && stat.IsDir() {
+			l.V(1).Info("found image in filesystem cache", "digest", digestRef.DigestStr())
+			return unpackedResult(os.DirFS(unpackPath), catalog, digestRef.String()), nil
+		}
+	}
+
 	imgDesc, err := remote.Head(imgRef, remoteOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("error fetching image descriptor: %w", err)
 	}
 
+	l.V(1).Info("resolved image descriptor", "digest", imgDesc.Digest.String())
 	dirToUnpack := imgDesc.Annotations[configDirLabel]
 	if dirToUnpack == "" {
 		dirToUnpack = "configs"
 	}
 
-	unpackPath := filepath.Join(i.BaseCachePath, catalog.Name, imgDesc.Digest.Hex)
+	unpackPath := filepath.Join(i.BaseCachePath, catalog.Name, imgDesc.Digest.String())
 	if _, err = os.Stat(unpackPath); errors.Is(err, os.ErrNotExist) {
+		// Ensure any previous unpacked catalog is cleaned up before unpacking the new catalog.
+		if err := i.Cleanup(ctx, catalog); err != nil {
+			return nil, fmt.Errorf("error cleaning up catalog cache: %w", err)
+		}
 		if err = os.MkdirAll(unpackPath, 0700); err != nil {
 			return nil, fmt.Errorf("error creating unpack path: %w", err)
 		}
@@ -85,19 +103,26 @@ func (i *ImageRegistry) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Ca
 		return nil, fmt.Errorf("error checking if image is in filesystem cache: %w", err)
 	}
 
-	fsys := os.DirFS(unpackPath)
+	resolvedRef := fmt.Sprintf("%s@%s", imgRef.Context().Name(), imgDesc.Digest)
+	return unpackedResult(os.DirFS(unpackPath), catalog, resolvedRef), nil
+}
 
+func (i *ImageRegistry) Cleanup(_ context.Context, catalog *catalogdv1alpha1.Catalog) error {
+	return os.RemoveAll(filepath.Join(i.BaseCachePath, catalog.Name))
+}
+
+func unpackedResult(fsys fs.FS, catalog *catalogdv1alpha1.Catalog, ref string) *Result {
 	return &Result{
 		FS: fsys,
 		ResolvedSource: &catalogdv1alpha1.CatalogSource{
 			Type: catalogdv1alpha1.SourceTypeImage,
 			Image: &catalogdv1alpha1.ImageSource{
-				Ref:        fmt.Sprintf("%s@sha256:%s", imgRef.Context().Name(), imgDesc.Digest.Hex),
+				Ref:        ref,
 				PullSecret: catalog.Spec.Source.Image.PullSecret,
 			},
 		},
 		State: StateUnpacked,
-	}, nil
+	}
 }
 
 // unpackImage unpacks a catalog image reference to the provided unpackPath,

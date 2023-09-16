@@ -17,8 +17,8 @@ var catalogdFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	// Add new feature gate definitions
 	// Ex: SomeFeature: {...}
 
-	HTTPServer:                {Default: false, PreRelease: featuregate.Alpha},
-	UnpackImageRegistryClient: {Default: false, PreRelease: featuregate.Alpha},
+	HTTPServer:                {Default: true, PreRelease: featuregate.Alpha},
+	UnpackImageRegistryClient: {Default: true, PreRelease: featuregate.Alpha},
 }
 
 var CatalogdFeatureGate featuregate.MutableFeatureGate = featuregate.NewFeatureGate()

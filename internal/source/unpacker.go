@@ -36,6 +36,7 @@ import (
 // file tree and delegate catalog format concerns to catalog parsers.
 type Unpacker interface {
 	Unpack(context.Context, *catalogdv1alpha1.Catalog) (*Result, error)
+	Cleanup(context.Context, *catalogdv1alpha1.Catalog) error
 }
 
 // Result conveys progress information about unpacking catalog content.
@@ -94,6 +95,14 @@ func (s *unpacker) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Catalog
 		return nil, fmt.Errorf("source type %q not supported", catalog.Spec.Source.Type)
 	}
 	return source.Unpack(ctx, catalog)
+}
+
+func (s *unpacker) Cleanup(ctx context.Context, catalog *catalogdv1alpha1.Catalog) error {
+	source, ok := s.sources[catalog.Spec.Source.Type]
+	if !ok {
+		return fmt.Errorf("source type %q not supported", catalog.Spec.Source.Type)
+	}
+	return source.Cleanup(ctx, catalog)
 }
 
 const UnpackCacheDir = "unpack"

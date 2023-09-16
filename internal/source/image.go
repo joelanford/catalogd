@@ -63,6 +63,10 @@ func (i *Image) Unpack(ctx context.Context, catalog *catalogdv1alpha1.Catalog) (
 	}
 }
 
+func (i *Image) Cleanup(ctx context.Context, catalog *catalogdv1alpha1.Catalog) error {
+	return i.Client.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: i.PodNamespace, Name: catalog.Name}})
+}
+
 func (i *Image) ensureUnpackPod(ctx context.Context, catalog *catalogdv1alpha1.Catalog, pod *corev1.Pod) (controllerutil.OperationResult, error) {
 	existingPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: i.PodNamespace, Name: catalog.Name}}
 	if err := i.Client.Get(ctx, client.ObjectKeyFromObject(existingPod), existingPod); client.IgnoreNotFound(err) != nil {
