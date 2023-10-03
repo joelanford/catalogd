@@ -2,6 +2,8 @@ apiVersion: catalogd.operatorframework.io/v1alpha1
 kind: Catalog
 metadata:
   name: operatorhubio
+  annotations:
+    "catalogd.operatorframework.io/domain-prefix": "io.operatorhub"
 spec:
   source:
     type: image

@@ -8,6 +8,7 @@ repo = {
     'yaml': 'config/default',
     'binaries': {
         'manager': 'catalogd-controller-manager',
+        'catdapter': 'catalogd-catdapter',
     },
     'starting_debug_port': 20000,
 }

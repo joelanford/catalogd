@@ -87,7 +87,7 @@ lint: $(GOLANGCI_LINT) ## Run golangci linter.
 
 ##@ Build
 
-BINARIES=manager
+BINARIES=manager catdapter
 LINUX_BINARIES=$(join $(addprefix linux/,$(BINARIES)), )
 
 # Build info

@@ -1,6 +1,8 @@
 module github.com/operator-framework/catalogd
 
-go 1.20
+go 1.21
+
+toolchain go1.21.1
 
 require (
 	github.com/blang/semver/v4 v4.0.0
@@ -12,19 +14,25 @@ require (
 	github.com/google/go-containerregistry/pkg/authn/kubernetes v0.0.0-20230310164735-e94d40893b2d
 	github.com/onsi/ginkgo/v2 v2.9.7
 	github.com/onsi/gomega v1.27.7
+	github.com/operator-framework/api v0.17.7
 	github.com/operator-framework/operator-registry v1.29.0
 	github.com/prometheus/client_golang v1.15.1
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.8.3
+	github.com/vmware-tanzu/carvel-kapp-controller v0.48.1
+	golang.org/x/net v0.17.0
 	k8s.io/api v0.27.2
 	k8s.io/apiextensions-apiserver v0.27.2
 	k8s.io/apimachinery v0.27.2
 	k8s.io/apiserver v0.27.2
 	k8s.io/client-go v0.27.2
 	k8s.io/component-base v0.27.2
+	k8s.io/klog/v2 v2.90.1
 	sigs.k8s.io/controller-runtime v0.15.0
 	sigs.k8s.io/yaml v1.3.0
 )
+
+replace github.com/vmware-tanzu/carvel-kapp-controller => ../../carvel-dev/kapp-controller
 
 require (
 	cloud.google.com/go/compute v1.19.0 // indirect
@@ -42,7 +50,7 @@ require (
 	github.com/Microsoft/hcsshim v0.9.8 // indirect
 	github.com/acomagu/bufpipe v1.0.3 // indirect
 	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230305170008-8188dc5388df // indirect
-	github.com/asaskevich/govalidator v0.0.0-20190424111038-f61b66f89f4a // indirect
+	github.com/asaskevich/govalidator v0.0.0-20200428143746-21a406dcc535 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.17.5 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.18.15 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.13.15 // indirect
@@ -103,13 +111,12 @@ require (
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
-	github.com/mitchellh/mapstructure v1.4.1 // indirect
+	github.com/mitchellh/mapstructure v1.4.3 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.0-rc2.0.20221005185240-3a7f492d3f1b // indirect
-	github.com/operator-framework/api v0.17.7 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_model v0.4.0 // indirect
@@ -118,6 +125,7 @@ require (
 	github.com/sirupsen/logrus v1.9.2 // indirect
 	github.com/stoewer/go-strcase v1.2.0 // indirect
 	github.com/vbatts/tar-split v0.11.2 // indirect
+	github.com/vmware-tanzu/carvel-vendir v0.33.1 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
 	go.uber.org/multierr v1.6.0 // indirect
@@ -125,7 +133,6 @@ require (
 	golang.org/x/crypto v0.14.0 // indirect
 	golang.org/x/exp v0.0.0-20230315142452-642cacee5cc0 // indirect
 	golang.org/x/mod v0.10.0 // indirect
-	golang.org/x/net v0.17.0 // indirect
 	golang.org/x/oauth2 v0.6.0 // indirect
 	golang.org/x/sync v0.2.0 // indirect
 	golang.org/x/sys v0.13.0 // indirect
@@ -141,7 +148,6 @@ require (
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	k8s.io/klog/v2 v2.90.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20230501164219-8b0f38b5fd1f // indirect
 	k8s.io/utils v0.0.0-20230308161112-d77c459e9343 // indirect
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
