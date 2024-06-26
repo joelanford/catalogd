@@ -1,13 +1,19 @@
 package storage
 
 import (
+	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
+
+	"codeberg.org/meta/gzipped/v2"
 
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 )
@@ -27,23 +33,51 @@ func (s LocalDir) Store(ctx context.Context, catalog string, fsys fs.FS) error {
 	if err := os.MkdirAll(fbcDir, 0700); err != nil {
 		return err
 	}
-	tempFile, err := os.CreateTemp(s.RootDir, fmt.Sprint(catalog))
+
+	tmpDir, err := os.MkdirTemp(s.RootDir, fmt.Sprintf(".%s-*.tmp", catalog))
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tempFile.Name())
-	err = declcfg.WalkMetasFS(ctx, fsys, func(path string, meta *declcfg.Meta, err error) error {
-		if err != nil {
-			return fmt.Errorf("error in parsing catalog content files in the filesystem: %w", err)
-		}
-		_, err = tempFile.Write(meta.Blob)
-		return err
-	})
+	jsonFile, err := os.Create(filepath.Join(tmpDir, "all.json"))
 	if err != nil {
 		return err
 	}
-	fbcFile := filepath.Join(fbcDir, "all.json")
-	return os.Rename(tempFile.Name(), fbcFile)
+	jsonGzFile, err := os.Create(filepath.Join(tmpDir, "all.json.gz"))
+	if err != nil {
+		return err
+	}
+
+	if err := func() error {
+		var (
+			gzipMu     sync.Mutex
+			gzipWriter = gzip.NewWriter(jsonGzFile)
+			mw         = io.MultiWriter(jsonFile, gzipWriter)
+		)
+
+		defer func() {
+			_ = gzipWriter.Close()
+			_ = jsonFile.Close()
+			_ = jsonGzFile.Close()
+		}()
+
+		return declcfg.WalkMetasFS(ctx, fsys, func(path string, meta *declcfg.Meta, err error) error {
+			if err != nil {
+				return fmt.Errorf("error in parsing catalog content files in the filesystem: %w", err)
+			}
+			gzipMu.Lock()
+			defer gzipMu.Unlock()
+			_, err = mw.Write(meta.Blob)
+			return err
+		})
+	}(); err != nil {
+		return err
+	}
+
+	// Rename the temporary directory to the final directory
+	if err := os.RemoveAll(fbcDir); err != nil {
+		return err
+	}
+	return os.Rename(tmpDir, fbcDir)
 }
 
 func (s LocalDir) Delete(catalog string) error {
@@ -56,8 +90,40 @@ func (s LocalDir) ContentURL(catalog string) string {
 
 func (s LocalDir) StorageServerHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle(s.BaseURL.Path, http.StripPrefix(s.BaseURL.Path, http.FileServer(http.FS(&filesOnlyFilesystem{os.DirFS(s.RootDir)}))))
+	mux.Handle(s.BaseURL.Path, http.StripPrefix(s.BaseURL.Path, gzipped.FileServer(gzipped.FS(&filesOnlyFilesystem{os.DirFS(s.RootDir)}))))
 	return mux
+}
+
+func (s LocalDir) Exists(catalog string) (bool, error) {
+	exists := func(path string) (bool, error) {
+		s, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return !s.IsDir(), nil
+	}
+
+	var (
+		paths = []string{
+			filepath.Join(s.RootDir, catalog, "all.json"),
+			filepath.Join(s.RootDir, catalog, "all.json.gz"),
+		}
+		errs          = make([]error, 0, len(paths))
+		allFilesExist = true
+	)
+
+	for _, path := range paths {
+		exist, err := exists(path)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		allFilesExist = allFilesExist && exist
+	}
+	return allFilesExist, errors.Join(errs...)
 }
 
 // filesOnlyFilesystem is a file system that can open only regular

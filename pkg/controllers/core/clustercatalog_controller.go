@@ -132,12 +132,9 @@ func (r *ClusterCatalogReconciler) reconcile(ctx context.Context, catalog *v1alp
 		controllerutil.RemoveFinalizer(catalog, fbcDeletionFinalizer)
 		return ctrl.Result{}, nil
 	}
-	// if ResolvedSource is not nil, it indicates that this is not the first time we're
-	// unpacking this catalog.
-	if catalog.Status.ResolvedSource != nil {
-		if !unpackAgain(catalog) {
-			return ctrl.Result{}, nil
-		}
+
+	if !r.needsUnpack(catalog) {
+		return ctrl.Result{}, nil
 	}
 	unpackResult, err := r.Unpacker.Unpack(ctx, catalog)
 	if err != nil {
@@ -247,7 +244,11 @@ func updateStatusStorageDeleteError(status *v1alpha1.ClusterCatalogStatus, err e
 	return err
 }
 
-func unpackAgain(catalog *v1alpha1.ClusterCatalog) bool {
+func (r *ClusterCatalogReconciler) needsUnpack(catalog *v1alpha1.ClusterCatalog) bool {
+	// if the expected storage doesn't exist, unpack
+	if exists, err := r.Storage.Exists(catalog.Name); !exists || err != nil {
+		return true
+	}
 	// if the spec.Source.Image.Ref was changed, unpack the new ref
 	if catalog.Spec.Source.Image.Ref != catalog.Status.ResolvedSource.Image.Ref {
 		return true

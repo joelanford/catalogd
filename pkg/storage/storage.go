@@ -11,6 +11,7 @@ import (
 // host's filesystem. It also a manager runnable object, that starts
 // a server to serve the content stored.
 type Instance interface {
+	Exists(catalog string) (bool, error)
 	Store(ctx context.Context, catalog string, fsys fs.FS) error
 	Delete(catalog string) error
 	ContentURL(catalog string) string
