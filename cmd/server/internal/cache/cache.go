@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 )
@@ -134,6 +135,17 @@ type cachedCatalog struct {
 
 type Index struct {
 	keys map[string][]section
+}
+
+func (i Index) Size() int {
+	s := 0
+	for key, sections := range i.keys {
+		s += len(key)
+		for _, section := range sections {
+			s += int(unsafe.Sizeof(section.offset) + unsafe.Sizeof(section.length))
+		}
+	}
+	return s
 }
 
 func (i Index) Get(r io.ReaderAt, schema, packageName, name string) (io.Reader, bool) {

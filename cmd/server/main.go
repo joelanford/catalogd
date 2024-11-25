@@ -37,7 +37,7 @@ func main() {
 		Use:  "query <cacheDir> <addr>",
 		Args: cobra.ExactArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
-			queryCache := cache.NewCache(args[0], 30*time.Minute)
+			queryCache := cache.NewCache(args[0], 2*time.Second)
 			queryServer := getQueryServer(queryCache, args[1])
 			log.Printf("Starting query server on %s", queryServer.Addr)
 			if err := runServer(cmd.Context(), queryServer, 5*time.Second); err != nil {
@@ -45,10 +45,60 @@ func main() {
 			}
 		},
 	}
+	exec := cobra.Command{
+		Use:  "exec <addr> <catalogName>",
+		Args: cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			cacheDir, err := os.MkdirTemp("", "server-exec")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer os.RemoveAll(cacheDir)
+
+			queryCache := cache.NewCache(cacheDir, 2*time.Second)
+
+			addr := args[0]
+			catalogName := args[1]
+
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf(upstreamPattern, addr, catalogName), nil)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				log.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				log.Fatalf("unexpected status code %v", resp.StatusCode)
+			}
+
+			for k, vs := range resp.Header {
+				fmt.Println("  ", k, vs)
+			}
+			modTime, err := time.Parse(http.TimeFormat, resp.Header.Get("Last-Modified"))
+			if err != nil {
+				log.Fatal(err)
+			}
+			f, idx, err := queryCache.Set(catalogName, resp.Body, &modTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			r, ok := idx.Get(f, "olm.channel", "zoperator", "")
+			if !ok {
+				log.Fatal("not found")
+			}
+			_, err = io.Copy(os.Stdout, r)
+			if err != nil {
+				log.Fatal(err)
+			}
+		},
+	}
 	root := cobra.Command{
 		Use: "catalogd",
 	}
-	root.AddCommand(&all, &query)
+	root.AddCommand(&all, &query, &exec)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -85,8 +135,8 @@ func getCatalogdServer(baseDir string) *http.Server {
 	h := http.NewServeMux()
 	h.Handle("GET /catalogs/{catalogName}/api/v1/all", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fileName := filepath.Join(baseDir, r.PathValue("catalogName"), "catalog.json")
-		fmt.Println(fileName)
-		http.ServeFile(w, r, filepath.Join(baseDir, r.PathValue("catalogName"), "catalog.json"))
+		w.Header().Set("Content-Type", "application/jsonl")
+		http.ServeFile(w, r, fileName)
 	}))
 	s := http.Server{
 		Addr:    ":8080",
@@ -95,9 +145,10 @@ func getCatalogdServer(baseDir string) *http.Server {
 	return &s
 }
 
+const upstreamPattern = "http://%s/catalogs/%s/api/v1/all"
+
 func getQueryServer(c *cache.Cache, addr string) *http.Server {
 	h := http.NewServeMux()
-	upstreamPattern := "http://%s/catalogs/%s/api/v1/all"
 	h.Handle("GET /catalogs/{catalogName}/api/v1/query", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		catalogName := r.PathValue("catalogName")
 		schema := r.URL.Query().Get("schema")
@@ -125,7 +176,10 @@ func getQueryServer(c *cache.Cache, addr string) *http.Server {
 			req.Header.Set("If-Modified-Since", existingCatalogModTime.Format(http.TimeFormat))
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		cl := &http.Client{
+			Transport: &http.Transport{},
+		}
+		resp, err := cl.Do(req)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -144,6 +198,7 @@ func getQueryServer(c *cache.Cache, addr string) *http.Server {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			fmt.Println("Downstream Content-Length:", resp.Header.Get("Content-Length"))
 			newFile, newIndex, err := c.Set(catalogName, resp.Body, &newModTime)
 			if err != nil {
 				http.Error(w, fmt.Errorf("could not store response in cache: %v", err).Error(), http.StatusInternalServerError)
@@ -178,6 +233,8 @@ func getQueryServer(c *cache.Cache, addr string) *http.Server {
 		}
 		w.Header().Set("Content-Type", "application/jsonl")
 		w.Header().Set("Last-Modified", catalogModTime.Format(http.TimeFormat))
+
+		fmt.Println("Approximate size of index: ", catalogIndex.Size())
 
 		jqQuery := r.URL.Query().Get("jq")
 		if jqQuery == "" {
