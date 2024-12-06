@@ -1,6 +1,7 @@
 package serverutil
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -9,6 +10,7 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	catalogdmetrics "github.com/operator-framework/catalogd/internal/metrics"
 	"github.com/operator-framework/catalogd/internal/storage"
@@ -43,8 +45,11 @@ func AddCatalogServerToManager(mgr ctrl.Manager, cfg CatalogServerConfig, tlsFil
 	catalogServer := server.Server{
 		Kind: "catalogs",
 		Server: &http.Server{
-			Addr:        cfg.CatalogAddr,
-			Handler:     catalogdmetrics.AddMetricsToHandler(cfg.LocalStorage.StorageServerHandler()),
+			Addr:    cfg.CatalogAddr,
+			Handler: catalogdmetrics.AddMetricsToHandler(cfg.LocalStorage.StorageServerHandler()),
+			BaseContext: func(_ net.Listener) context.Context {
+				return log.IntoContext(context.Background(), mgr.GetLogger().WithName("http.catalogs"))
+			},
 			ReadTimeout: 5 * time.Second,
 			// TODO: Revert this to 10 seconds if/when the API
 			// evolves to have significantly smaller responses
